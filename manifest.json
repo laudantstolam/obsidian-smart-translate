@@ -1,0 +1,10 @@
+{
+	"id": "smart-translator",
+	"name": "Smart Translator (DeepL + OpenCC)",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Seamlessly translates text using DeepL and converts Chinese to Traditional Taiwan using OpenCC.",
+	"author": "ashstolam@duck.com",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
