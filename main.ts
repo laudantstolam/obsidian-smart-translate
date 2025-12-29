@@ -1,5 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, Menu, requestUrl } from 'obsidian';
-import * as OpenCC from 'opencc-js';
+import { App, Editor, Notice, Plugin, PluginSettingTab, Setting, Menu, requestUrl } from 'obsidian';
 
 // --- 設定介面定義 ---
 interface MyPluginSettings {
@@ -19,59 +18,57 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 // --- 主插件類別 ---
 export default class TranslatePlugin extends Plugin {
 	settings: MyPluginSettings;
-	openccConverter: any;
+	openccConverter: any = null; // Lazy load only when needed
 
 	async onload() {
 		await this.loadSettings();
 
-		// 初始化 OpenCC (簡體 -> 台灣正體 + 慣用詞)
-		// 這樣我們在本地就能處理，速度極快
-		this.openccConverter = OpenCC.Converter({ from: 'cn', to: 'twp' });
-
-		// 1. 註冊指令：全頁翻譯 -> 預設語言
+		// === DeepL 翻譯指令 ===
+		// 1. 全頁翻譯到預設語言
 		this.addCommand({
 			id: 'translate-full-page-default',
 			name: `Translate: Full Page → ${this.settings.defaultTargetLang}`,
 			editorCallback: async (editor: Editor) => {
 				const content = editor.getValue();
-				await this.processUnifiedTranslation(editor, content, this.settings.defaultTargetLang, true);
+				await this.processDeepLTranslation(editor, content, this.settings.defaultTargetLang, true);
 			}
 		});
 
-		// 2. 註冊指令：選取翻譯 -> 預設語言
+		// 2. 選取翻譯到預設語言
 		this.addCommand({
 			id: 'translate-section-default',
 			name: `Translate: Section → ${this.settings.defaultTargetLang}`,
 			editorCallback: async (editor: Editor) => {
 				const selection = editor.getSelection();
 				if (selection) {
-					await this.processUnifiedTranslation(editor, selection, this.settings.defaultTargetLang, false);
+					await this.processDeepLTranslation(editor, selection, this.settings.defaultTargetLang, false);
 				} else {
 					new Notice('Please select text to translate');
 				}
 			}
 		});
 
-		// 3. 註冊指令：全頁翻譯 -> 繁體中文
+		// === OpenCC 簡繁轉換指令 ===
+		// 3. 全頁簡繁轉換
 		this.addCommand({
-			id: 'translate-full-page-zhhant',
-			name: 'Translate: Full Page → ZH-HANT',
+			id: 'opencc-convert-full-page',
+			name: '簡繁轉換：全頁',
 			editorCallback: async (editor: Editor) => {
 				const content = editor.getValue();
-				await this.processUnifiedTranslation(editor, content, 'ZH-HANT', true);
+				await this.processOpenCCConversion(editor, content, true);
 			}
 		});
 
-		// 4. 註冊指令：選取翻譯 -> 繁體中文
+		// 4. 選取簡繁轉換
 		this.addCommand({
-			id: 'translate-section-zhhant',
-			name: 'Translate: Section → ZH-HANT',
+			id: 'opencc-convert-selection',
+			name: '簡繁轉換：選取',
 			editorCallback: async (editor: Editor) => {
 				const selection = editor.getSelection();
 				if (selection) {
-					await this.processUnifiedTranslation(editor, selection, 'ZH-HANT', false);
+					await this.processOpenCCConversion(editor, selection, false);
 				} else {
-					new Notice('Please select text to translate');
+					new Notice('請先選取文字');
 				}
 			}
 		});
@@ -81,13 +78,23 @@ export default class TranslatePlugin extends Plugin {
 			this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor) => {
 				const selection = editor.getSelection();
 				if (selection) {
-					// 添加 "Translate to [Default]" 選項
+					// DeepL 翻譯選項
 					menu.addItem((item) => {
 						item
-							.setTitle(`Translate to ${this.settings.defaultTargetLang}`)
+							.setTitle(`翻譯到 ${this.settings.defaultTargetLang}`)
 							.setIcon("languages")
 							.onClick(async () => {
-								await this.processUnifiedTranslation(editor, selection, this.settings.defaultTargetLang, false);
+								await this.processDeepLTranslation(editor, selection, this.settings.defaultTargetLang, false);
+							});
+					});
+
+					// OpenCC 簡繁轉換選項
+					menu.addItem((item) => {
+						item
+							.setTitle('簡繁轉換')
+							.setIcon("repeat")
+							.onClick(async () => {
+								await this.processOpenCCConversion(editor, selection, false);
 							});
 					});
 				}
@@ -98,58 +105,251 @@ export default class TranslatePlugin extends Plugin {
 		this.addSettingTab(new TranslateSettingTab(this.app, this));
 	}
 
-	// --- 處理表格翻譯（完全提取分隔行，不使用佔位符）---
-	handleTableTranslation(text: string, placeholderMap: Map<string, string>, placeholderIndex: number): { text: string; index: number; separators: Array<{line: number, content: string}> } {
-		const lines = text.split('\n');
-		const separators: Array<{line: number, content: string}> = [];
-		let result = '';
+	// --- UUID 生成器 ---
+	generateUUID(): string {
+		return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+			const r = Math.random() * 16 | 0;
+			const v = c == 'x' ? r : (r & 0x3 | 0x8);
+			return v.toString(16);
+		});
+	}
 
-		// 第一步：提取所有分隔行，記錄行號
+	// --- 處理表格翻譯（使用 UUID 標記代替行索引）---
+	handleTableTranslation(text: string, placeholderMap: Map<string, string>, placeholderIndex: number): { text: string; index: number; separators: Map<string, string> } {
+		const lines = text.split('\n');
+		const separators = new Map<string, string>();
+
+		// 處理每一行
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
+
 			// 檢測是否為表格分隔行
 			if (/^\|[\s|:-]+\|[ \t]*$/.test(line)) {
-				separators.push({ line: i, content: line });
-				// 用空行標記（稍後恢復時會知道位置）
-				lines[i] = `XXSEPARATORLINEXX${i}XX`;
+				const uuid = this.generateUUID();
+				separators.set(uuid, line);
+				// 用 UUID 標記替換
+				lines[i] = `XXSEPARATORLINEXX${uuid}XX`;
 			} else if (/^\|(.+)\|[ \t]*$/.test(line)) {
-				// 處理表格內容行：保護每個管道符號
-				const pipeMatches = line.match(/\|/g);
-				if (pipeMatches) {
-					let processedLine = line;
-					pipeMatches.forEach(() => {
-						const placeholder = `XXTABLEPIPEXX${placeholderIndex}XXTABLEPIPEXX`;
-						placeholderIndex++;
-						placeholderMap.set(placeholder, '|');
-						processedLine = processedLine.replace('|', placeholder);
-					});
-					lines[i] = processedLine;
+				// 處理表格內容行：保護每個管道符號（從後往前替換）
+				const pipeRegex = /\|/g;
+				const matches = Array.from(line.matchAll(pipeRegex));
+
+				// 從後往前替換，避免索引位置變化
+				let processedLine = line;
+				matches.reverse().forEach(match => {
+					const placeholder = `XXTABLEPIPEXX${placeholderIndex}XXTABLEPIPEXX`;
+					placeholderIndex++;
+					placeholderMap.set(placeholder, '|');
+
+					// 使用索引位置精確替換
+					const start = match.index!;
+					const end = start + 1; // '|' 的長度是 1
+					processedLine = processedLine.substring(0, start) + placeholder + processedLine.substring(end);
+				});
+
+				lines[i] = processedLine;
+			}
+		}
+
+		const result = lines.join('\n');
+		return { text: result, index: placeholderIndex, separators };
+	}
+
+	// --- 恢復表格分隔行（使用 UUID 和多級回退策略）---
+	restoreTableSeparators(text: string, separators: Map<string, string>): string {
+		let lines = text.split('\n');
+		let restoredCount = 0;
+
+		// 第一級：嘗試精確 UUID 匹配
+		separators.forEach((originalContent, uuid) => {
+			const exactMarker = `XXSEPARATORLINEXX${uuid}XX`;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes(exactMarker)) {
+					lines[i] = originalContent;
+					restoredCount++;
+					separators.delete(uuid); // 標記為已恢復
+					break;
+				}
+			}
+		});
+
+		// 第二級：模糊匹配（DeepL 可能在 UUID 中添加空格）
+		if (separators.size > 0) {
+			separators.forEach((originalContent, uuid) => {
+				const flexiblePattern = `XXSEPARATORLINEXX\\s*${uuid.replace(/-/g, '\\s*-\\s*')}\\s*XX`;
+				const regex = new RegExp(flexiblePattern, 'g');
+				
+				for (let i = 0; i < lines.length; i++) {
+					if (regex.test(lines[i])) {
+						lines[i] = originalContent;
+						restoredCount++;
+						separators.delete(uuid);
+						break;
+					}
+				}
+			});
+		}
+
+		// 第三級：模式匹配（尋找任何遺留的 SEPARATORLINE 標記）
+		if (separators.size > 0) {
+			const separatorMarkerPattern = /XXSEPARATORLINEXX[0-9a-fA-F-]+XX/g;
+			
+			for (let i = 0; i < lines.length; i++) {
+				const match = lines[i].match(separatorMarkerPattern);
+				if (match) {
+					// 找到最近的未恢復分隔符
+					const firstAvailable = separators.keys().next().value;
+					if (firstAvailable) {
+						lines[i] = separators.get(firstAvailable)!;
+						restoredCount++;
+						separators.delete(firstAvailable);
+					}
 				}
 			}
 		}
 
-		result = lines.join('\n');
-		return { text: result, index: placeholderIndex, separators };
-	}
-
-	// --- 恢復表格分隔行 ---
-	restoreTableSeparators(text: string, separators: Array<{line: number, content: string}>): string {
-		let lines = text.split('\n');
-
-		// 恢復所有分隔行
-		separators.forEach(sep => {
-			// 查找標記行
-			const markerIndex = lines.findIndex(line => line.includes(`XXSEPARATORLINEXX${sep.line}XX`));
-			if (markerIndex !== -1) {
-				lines[markerIndex] = sep.content;
-			}
-		});
+		// 第四級：智能重建（如果仍有遺留的分隔符）
+		if (separators.size > 0) {
+			lines = this.rebuildMissingSeparators(lines, separators);
+		}
 
 		return lines.join('\n');
 	}
 
+	// --- 智能重建缺失的表格分隔符 ---
+	rebuildMissingSeparators(lines: string[], remainingSeparators: Map<string, string>): string[] {
+		for (let i = 0; i < lines.length - 1; i++) {
+			const currentLine = lines[i];
+			const nextLine = lines[i + 1];
+
+			// 檢查是否為表格標題行且下一行不是分隔符
+			if (/^\|(.+)\|[ \t]*$/.test(currentLine) && !/^\|[\s|:-]+\|[ \t]*$/.test(nextLine)) {
+				// 從標題行推斷分隔符格式
+				const pipeCount = (currentLine.match(/\|/g) || []).length;
+				let separator = '|';
+
+				for (let j = 1; j < pipeCount - 1; j++) {
+					separator += '---|';
+				}
+				separator += '\n';
+
+				// 在標題行後插入分隔符
+				lines.splice(i + 1, 0, separator);
+				
+				// 移除一個已使用的分隔符
+				const firstAvailable = remainingSeparators.keys().next().value;
+				if (firstAvailable) {
+					remainingSeparators.delete(firstAvailable);
+				}
+
+				// 跳過新插入的行
+				i++;
+			}
+		}
+
+		return lines;
+	}
+
+	// --- 驗證表格結構完整性 ---
+	validateTableStructure(lines: string[]): { isValid: boolean; issues: string[] } {
+		const issues: string[] = [];
+		let inTable = false;
+		let headerLineIndex = -1;
+		let separatorLineIndex = -1;
+
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].trim();
+
+			// 檢測表格開始
+			if (/^\|(.+)\|[ \t]*$/.test(line) && !inTable) {
+				inTable = true;
+				headerLineIndex = i;
+				continue;
+			}
+
+			// 檢測分隔符
+			if (inTable && /^\|[\s|:-]+\|[ \t]*$/.test(line)) {
+				if (separatorLineIndex === -1) {
+					separatorLineIndex = i;
+				}
+				continue;
+			}
+
+			// 檢測表格結束
+			if (inTable && !/^\|(.+)\|[ \t]*$/.test(line) && !/^\|[\s|:-]+\|[ \t]*$/.test(line)) {
+				// 驗證剛剛結束的表格
+				if (separatorLineIndex === -1) {
+					issues.push(`Table at line ${headerLineIndex + 1} missing separator line`);
+				} else {
+					// 檢查標題行和分隔符的管道數量是否一致
+					const headerPipes = (lines[headerLineIndex].match(/\|/g) || []).length;
+					const separatorPipes = (lines[separatorLineIndex].match(/\|/g) || []).length;
+					
+					if (headerPipes !== separatorPipes) {
+						issues.push(`Table at line ${headerLineIndex + 1} has mismatched pipe counts: header has ${headerPipes}, separator has ${separatorPipes}`);
+					}
+				}
+
+				// 重置狀態
+				inTable = false;
+				headerLineIndex = -1;
+				separatorLineIndex = -1;
+			}
+		}
+
+		// 檢查文件末尾的表格
+		if (inTable) {
+			if (separatorLineIndex === -1) {
+				issues.push(`Table at line ${headerLineIndex + 1} missing separator line`);
+			} else {
+				const headerPipes = (lines[headerLineIndex].match(/\|/g) || []).length;
+				const separatorPipes = (lines[separatorLineIndex].match(/\|/g) || []).length;
+				
+				if (headerPipes !== separatorPipes) {
+					issues.push(`Table at line ${headerLineIndex + 1} has mismatched pipe counts: header has ${headerPipes}, separator has ${separatorPipes}`);
+				}
+			}
+		}
+
+		return {
+			isValid: issues.length === 0,
+			issues
+		};
+	}
+
+	// --- 自動修復表格結構 ---
+	repairTableStructure(text: string): string {
+		const lines = text.split('\n');
+		const repairedLines = [...lines];
+
+		for (let i = 0; i < repairedLines.length - 1; i++) {
+			const currentLine = repairedLines[i];
+			const nextLine = repairedLines[i + 1];
+
+			// 如果當前行是表格標題，下一行不是分隔符，且不是空行
+			if (/^\|(.+)\|[ \t]*$/.test(currentLine) && 
+				!/^\|[\s|:-]+\|[ \t]*$/.test(nextLine) && 
+				nextLine.trim() !== '') {
+				
+				// 自動生成分隔符
+				const pipeCount = (currentLine.match(/\|/g) || []).length;
+				let separator = '|';
+				
+				for (let j = 1; j < pipeCount - 1; j++) {
+					separator += '---|';
+				}
+				
+				// 在標題行後插入分隔符
+				repairedLines.splice(i + 1, 0, separator);
+				i++; // 跳過新插入的行
+			}
+		}
+
+		return repairedLines.join('\n');
+	}
+
 	// --- 內容保護功能（保護程式碼、連結、HTML、路徑等不翻譯）---
-	protectContent(text: string): { protectedText: string; placeholderMap: Map<string, string>; separators: Array<{line: number, content: string}> } {
+	protectContent(text: string): { protectedText: string; placeholderMap: Map<string, string>; separators: Map<string, string> } {
 		const placeholderMap = new Map<string, string>();
 		let protectedText = text;
 		let placeholderIndex = 0;
@@ -190,18 +390,21 @@ export default class TranslatePlugin extends Plugin {
 			{ name: 'FILEPATH', regex: /(?:[A-Z]:\\(?:[^\s\\/:*?"<>|]+\\)*[^\s\\/:*?"<>|]*)|(?:\.{0,2}\/(?:[^\s\/]+\/)*[^\s\/]*)|(?:\/(?:[^\s\/]+\/)*[^\s\/]+)/g },
 		];
 
-		// 依序套用保護規則
+		// 依序套用保護規則（使用 matchAll 配合索引位置，從後往前替換）
 		protectionRules.forEach(rule => {
-			const matches = protectedText.match(rule.regex);
-			if (matches) {
-				matches.forEach(match => {
-					const placeholder = `XX${rule.name}XX${placeholderIndex}XX${rule.name}XX`;
-					placeholderIndex++;
-					placeholderMap.set(placeholder, match);
-					// 只替換第一個匹配項（避免重複替換）
-					protectedText = protectedText.replace(match, placeholder);
-				});
-			}
+			const matches = Array.from(protectedText.matchAll(rule.regex));
+
+			// 從後往前替換，避免索引位置變化
+			matches.reverse().forEach(match => {
+				const placeholder = `XX${rule.name}XX${placeholderIndex}XX${rule.name}XX`;
+				placeholderIndex++;
+				placeholderMap.set(placeholder, match[0]);
+
+				// 使用索引位置精確替換
+				const start = match.index!;
+				const end = start + match[0].length;
+				protectedText = protectedText.substring(0, start) + placeholder + protectedText.substring(end);
+			});
 		});
 
 		// 保護技術關鍵字
@@ -213,21 +416,31 @@ export default class TranslatePlugin extends Plugin {
 		keywords.forEach((keyword) => {
 			// 使用不區分大小寫的正則表達式來匹配關鍵字（保留原始大小寫）
 			const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-			const matches = protectedText.match(regex);
+			const matches = Array.from(protectedText.matchAll(regex));
 
-			if (matches) {
-				// 為每個匹配項創建唯一的佔位符
-				matches.forEach(match => {
-					const placeholder = `XXKEYWORDXX${placeholderIndex}XXKEYWORDXX`;
-					placeholderIndex++;
-					placeholderMap.set(placeholder, match);
-					// 只替換第一個尚未替換的匹配項
-					protectedText = protectedText.replace(match, placeholder);
-				});
-			}
+			// 從後往前替換，避免索引位置變化
+			matches.reverse().forEach(match => {
+				const placeholder = `XXKEYWORDXX${placeholderIndex}XXKEYWORDXX`;
+				placeholderIndex++;
+				placeholderMap.set(placeholder, match[0]);
+
+				// 使用索引位置精確替換
+				const start = match.index!;
+				const end = start + match[0].length;
+				protectedText = protectedText.substring(0, start) + placeholder + protectedText.substring(end);
+			});
 		});
 
 		return { protectedText, placeholderMap, separators };
+	}
+
+	// --- 懶加載 OpenCC（僅在需要時初始化）---
+	async getOpenCCConverter() {
+		if (!this.openccConverter) {
+			const OpenCC = await import('opencc-js');
+			this.openccConverter = OpenCC.Converter({ from: 'cn', to: 'twp' });
+		}
+		return this.openccConverter;
 	}
 
 	restoreContent(text: string, placeholderMap: Map<string, string>): string {
@@ -235,73 +448,93 @@ export default class TranslatePlugin extends Plugin {
 
 		// 恢復所有受保護的內容（包括表格）
 		placeholderMap.forEach((original, placeholder) => {
-			// 首先嘗試精確匹配
+			// 首先嘗試精確匹配（最常見的情況）
 			if (restoredText.includes(placeholder)) {
 				restoredText = restoredText.split(placeholder).join(original);
-			} else {
-				// DeepL 可能在佔位符中添加空格，使用正則表達式處理
-				// 將佔位符轉換為允許空格的正則表達式
-				const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-				// 允許 XX 之間有任意空格
-				const flexiblePattern = escapedPlaceholder.replace(/XX/g, 'XX\\s*');
-				const regex = new RegExp(flexiblePattern, 'g');
-				restoredText = restoredText.replace(regex, original);
+				return;
 			}
+
+			// DeepL 可能在佔位符中添加空格，使用正則表達式處理
+			// 將佔位符轉換為允許空格的正則表達式
+			const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			// 允許 XX 之間有任意空格
+			const flexiblePattern = escapedPlaceholder.replace(/XX/g, 'XX\\s*');
+			const regex = new RegExp(flexiblePattern, 'g');
+			restoredText = restoredText.replace(regex, original);
 		});
 
 		return restoredText;
 	}
 
-	// --- 統一翻譯處理（自動選擇 OpenCC 或 DeepL）---
-	async processUnifiedTranslation(editor: Editor, text: string, targetLang: string, isFullPage: boolean) {
-		// 判斷目標語言，自動選擇翻譯引擎
-		const useOpenCC = targetLang === 'ZH-HANT';
-
-		new Notice(useOpenCC ? 'OpenCC Converting...' : 'DeepL Translating...');
+	// --- DeepL 翻譯處理 ---
+	async processDeepLTranslation(editor: Editor, text: string, targetLang: string, isFullPage: boolean) {
+		new Notice(`翻譯中 (DeepL)...`);
 
 		try {
-			// 1. 保護所有需要保留的內容（程式碼、連結、HTML、路徑、技術關鍵字、表格）
+			// 1. 保護所有需要保留的內容
 			const { protectedText, placeholderMap, separators } = this.protectContent(text);
 
-			// 2. 根據目標語言選擇翻譯引擎
-			let translatedText: string;
-			if (useOpenCC) {
-				// 使用 OpenCC 進行簡繁轉換
-				translatedText = this.openccConverter(protectedText);
-			} else {
-				// 使用 DeepL 翻譯
-				translatedText = await this.callDeepL(protectedText, targetLang);
-			}
+			// 2. 使用 DeepL 翻譯
+			const translatedText = await this.callDeepL(protectedText, targetLang);
 
-			// 3. 先恢復表格分隔行（這些被完全提取出來，沒有送到 API）
+			// 3. 先恢復表格分隔行
 			let restoredText = this.restoreTableSeparators(translatedText, separators);
 
-			// 4. 再恢復其他受保護的內容（佔位符替換）
+			// 4. 驗證並修復表格結構
+			restoredText = this.repairTableStructure(restoredText);
+			
+			// 5. 再恢復其他受保護的內容
 			restoredText = this.restoreContent(restoredText, placeholderMap);
 
-			// 5. 根據是全頁還是選取來更新內容
+			// 5. 更新內容
 			if (isFullPage) {
 				editor.setValue(restoredText);
 			} else {
 				editor.replaceSelection(restoredText);
 			}
 
-			new Notice(useOpenCC ? 'Conversion Done!' : 'Translation Done!');
+			new Notice('翻譯完成！');
 
 		} catch (error: any) {
-			new Notice(`Translation Failed: ${error.message || String(error)}`);
+			new Notice(`翻譯失敗：${error.message || String(error)}`);
 			console.error(error);
 		}
 	}
 
-	// --- 提示使用者選擇語言 ---
-	async promptForLanguage(): Promise<string | null> {
-		return new Promise((resolve) => {
-			const modal = new LanguageSelectionModal(this.app, (selectedLang) => {
-				resolve(selectedLang);
-			});
-			modal.open();
-		});
+	// --- OpenCC 簡繁轉換處理 ---
+	async processOpenCCConversion(editor: Editor, text: string, isFullPage: boolean) {
+		new Notice('轉換中 (OpenCC)...');
+
+		try {
+			// 1. 保護所有需要保留的內容
+			const { protectedText, placeholderMap, separators } = this.protectContent(text);
+
+			// 2. 使用 OpenCC 進行簡繁轉換（懶加載）
+			const converter = await this.getOpenCCConverter();
+			const convertedText = converter(protectedText);
+
+			// 3. 先恢復表格分隔行
+			let restoredText = this.restoreTableSeparators(convertedText, separators);
+
+			// 4. 驗證並修復表格結構
+			restoredText = this.repairTableStructure(restoredText);
+			
+			// 5. 再恢復其他受保護的內容
+			restoredText = this.restoreContent(restoredText, placeholderMap);
+
+			// 5. 更新內容
+			if (isFullPage) {
+				editor.setValue(restoredText);
+			} else {
+				editor.replaceSelection(restoredText);
+			}
+
+			new Notice('轉換完成！');
+
+		} catch (error: any) {
+			new Notice(`轉換失敗：${error.message || String(error)}`);
+			console.error(error);
+		}
 	}
 
 	// --- API 呼叫層 ---
@@ -491,58 +724,5 @@ class TranslateSettingTab extends PluginSettingTab {
 					this.plugin.settings.technicalKeywords = value;
 					await this.plugin.saveSettings();
 				}));
-	}
-}
-
-// --- 語言選擇模態框 ---
-class LanguageSelectionModal extends Modal {
-	onSubmit: (selectedLang: string | null) => void;
-	selectedLang: string = 'ZH-HANT';
-
-	constructor(app: App, onSubmit: (selectedLang: string | null) => void) {
-		super(app);
-		this.onSubmit = onSubmit;
-	}
-
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.empty();
-
-		contentEl.createEl('h2', { text: 'Select Target Language' });
-
-		new Setting(contentEl)
-			.setName('Target Language')
-			.setDesc('Choose the language to translate to')
-			.addDropdown(dropdown => dropdown
-				.addOption('ZH-HANT', 'Traditional Chinese (Taiwan)')
-				.addOption('ZH', 'Simplified Chinese')
-				.addOption('EN', 'English')
-				.addOption('FR', 'French')
-				.addOption('DE', 'German')
-				.addOption('JA', 'Japanese')
-				.setValue(this.selectedLang)
-				.onChange((value) => {
-					this.selectedLang = value;
-				}));
-
-		new Setting(contentEl)
-			.addButton(button => button
-				.setButtonText('Translate')
-				.setCta()
-				.onClick(() => {
-					this.onSubmit(this.selectedLang);
-					this.close();
-				}))
-			.addButton(button => button
-				.setButtonText('Cancel')
-				.onClick(() => {
-					this.onSubmit(null);
-					this.close();
-				}));
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
 	}
 }

@@ -35,11 +35,21 @@ const context = await esbuild.context({
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	minify: prod, // Minify in production for smaller bundle
+	metafile: prod, // Generate metafile for bundle analysis
 	outfile: "main.js",
 });
 
 if (prod) {
-	await context.rebuild();
+	const result = await context.rebuild();
+
+	// Write metafile for bundle analysis
+	if (result.metafile) {
+		const fs = await import('fs');
+		fs.writeFileSync('meta.json', JSON.stringify(result.metafile, null, 2));
+		// console.log('\n Bundle analysis written to meta.json');
+		// console.log('Output size:', (result.metafile.outputs['main.js'].bytes / 1024 / 1024).toFixed(2), 'MB');
+	}
+
 	process.exit(0);
 } else {
 	await context.watch();

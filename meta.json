@@ -1,0 +1,47 @@
+{
+  "inputs": {
+    "node_modules/opencc-js/dist/esm/full.js": {
+      "bytes": 1119279,
+      "imports": [],
+      "format": "esm"
+    },
+    "main.ts": {
+      "bytes": 22938,
+      "imports": [
+        {
+          "path": "obsidian",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node_modules/opencc-js/dist/esm/full.js",
+          "kind": "dynamic-import",
+          "original": "opencc-js"
+        }
+      ],
+      "format": "esm"
+    }
+  },
+  "outputs": {
+    "main.js": {
+      "imports": [
+        {
+          "path": "obsidian",
+          "kind": "require-call",
+          "external": true
+        }
+      ],
+      "exports": [],
+      "entryPoint": "main.ts",
+      "inputs": {
+        "node_modules/opencc-js/dist/esm/full.js": {
+          "bytesInOutput": 2105635
+        },
+        "main.ts": {
+          "bytesInOutput": 10784
+        }
+      },
+      "bytes": 2117000
+    }
+  }
+}
