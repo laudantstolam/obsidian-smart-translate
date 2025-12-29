@@ -11,8 +11,8 @@ Intelligent translation plugin using DeepL API with smart content protection.
 ### Main Features
 
 - **Intelligent Translation**: Auto-selects OpenCC (offline) for Traditional Chinese, DeepL for other languages
-- **Smart Protection**: Always preserves code, links, tables, Obsidian syntax, file paths, and technical keywords
-- **Table Support**: Translate table content while keeping structure intact
+- **Smart Protection**: Always preserves code blocks, inline code, links, tables, and Obsidian syntax
+- **Table Support**: Cell-by-cell translation preserves table structure perfectly
 - **Multiple Languages**: Traditional Chinese, Simplified Chinese, English, French, German, Japanese
 - **Flexible Usage**: Full page or selection translation with right-click menu or command palette
 - **Connection Test**: Built-in API connection testing with detailed logging
@@ -21,12 +21,11 @@ Intelligent translation plugin using DeepL API with smart content protection.
 ### Protected Content
 
 - **Code**: Blocks (` ``` `) and inline (`` ` ``)
-- **Tables**: Pipe characters (`|`) and separator rows preserved
+- **Tables**: Structure preserved with cell-by-cell translation
 - **Obsidian**: Wikilinks (`[[note]]`), embeds (`![[image]]`), callouts (`>[!note]`)
 - **Metadata**: Tags (`#tag`), block references (`^block-id`)
 - **Links**: Markdown (`[text](url)`), HTML tags
 - **Paths**: Windows (`C:\...`), Unix (`/...`), Relative (`./...`)
-- **Keywords**: Customizable technical terms (API, SDK, REST, etc.)
 
 ### Installation
 
@@ -65,25 +64,29 @@ Intelligent translation plugin using DeepL API with smart content protection.
 
 ### Table Translation
 
-**Always Preserved**: Table structure (pipes and separators) is automatically protected in all translations
+**Cell-by-Cell Translation**: Tables are translated using a smart cell-by-cell approach that preserves structure perfectly:
+- Each table cell is translated individually
+- Separator rows (`|---|---|`) are kept unchanged
+- Inline code blocks within cells are protected
+- Table structure (pipes and alignment) is automatically maintained
 
-**Full Table**: Select entire table → Use any translate command → Structure preserved
+**Full Table**: Select entire table → Use any translate command → Structure preserved, content translated
 **Partial Selection**: Select specific rows/columns → Use any translate command → Only selected content translated
 
 **Example:**
 ```markdown
 Before:
-| Feature | Description |
-| ------- | ----------- |
-| Login   | User authentication |
+| Feature | Description | Code |
+| ------- | ----------- | ---- |
+| Login   | User authentication | `auth.login()` |
 
 After (to Traditional Chinese):
-| 功能 | 說明 |
-| ------- | ----------- |
-| 登入   | 用戶身份驗證 |
+| 功能 | 說明 | 程式碼 |
+| ------- | ----------- | ---- |
+| 登入   | 用戶身份驗證 | `auth.login()` |
 ```
 
-**How It Works**: The plugin automatically protects all Obsidian syntax, code blocks, links, file paths, and technical keywords in both full page and selection translations.
+**How It Works**: The plugin uses a cell-by-cell translation strategy that sends each table cell to DeepL separately, ensuring the table structure remains intact while translating the content. All Obsidian syntax, code blocks, links, and file paths are automatically protected.
 
 ### Supported Languages
 
@@ -98,12 +101,17 @@ After (to Traditional Chinese):
 
 ### Configuration
 
-**Plugin Settings**:
+**Basic Settings**:
 - **DeepL API Key**: Your authentication key
 - **API Type**: Free or Pro account
 - **Test Connection**: Verify API setup with one click
 - **Default Target Language**: Language for translations
-- **Technical Keywords**: Comma-separated terms to preserve (e.g., `API, SDK, REST, HTTP, JSON`)
+
+**Advanced Settings** (Optional):
+- **Model Type**: Choose translation quality (default, quality_optimized, speed_optimized)
+- **Formality**: Choose translation formality level (default, more formal, less formal)
+- **Context**: Provide additional context for better translation accuracy
+- **Glossary ID**: Use a DeepL glossary for consistent terminology
 
 ### Examples
 
@@ -119,10 +127,17 @@ Input: See [[Documentation|docs]] for more info
 Output: 更多資訊請見 [[Documentation|docs]]
 ```
 
-**Keyword Protection:**
+**Table Translation:**
 ```
-Input: The REST API returns JSON responses
-Output: REST API 返回 JSON 回應
+Input:
+| Name | Status |
+|------|--------|
+| Login System | Complete |
+
+Output:
+| 名稱 | 狀態 |
+|------|--------|
+| 登入系統 | 已完成 |
 ```
 
 ### Commands
@@ -150,8 +165,8 @@ Output: REST API 返回 JSON 回應
 ### 主要功能
 
 - **智慧翻譯**：繁體中文自動使用 OpenCC（離線），其他語言使用 DeepL
-- **智慧保護**：自動保留程式碼、連結、表格、Obsidian 語法、檔案路徑和技術關鍵字
-- **表格支援**：翻譯表格內容同時保持結構完整
+- **智慧保護**：自動保留程式碼區塊、行內程式碼、連結、表格和 Obsidian 語法
+- **表格支援**：逐格翻譯完美保留表格結構
 - **多語言支援**：繁體中文、簡體中文、英文、法文、德文、日文
 - **靈活使用**：全頁或選取翻譯，支援右鍵選單與命令面板
 - **連線測試**：內建 API 連線測試與詳細日誌
@@ -160,12 +175,11 @@ Output: REST API 返回 JSON 回應
 ### 保護內容
 
 - **程式碼**：程式碼區塊（` ``` `）和行內程式碼（`` ` ``）
-- **表格**：管道符號（`|`）和分隔行保持完整
+- **表格**：使用逐格翻譯保留結構
 - **Obsidian**：Wikilinks（`[[筆記]]`）、嵌入（`![[圖片]]`）、標註框（`>[!note]`）
 - **元資料**：標籤（`#標籤`）、區塊引用（`^block-id`）
 - **連結**：Markdown（`[文字](url)`）、HTML 標籤
 - **路徑**：Windows（`C:\...`）、Unix（`/...`）、相對路徑（`./...`）
-- **關鍵字**：可自訂技術術語（API、SDK、REST 等）
 
 ### 安裝方式
 
@@ -204,25 +218,29 @@ Output: REST API 返回 JSON 回應
 
 ### 表格翻譯
 
-**自動保護**：所有翻譯中表格結構（管道符號和分隔線）會自動保護
+**逐格翻譯**：使用智慧逐格翻譯技術，完美保留表格結構：
+- 每個表格單元格單獨翻譯
+- 分隔行（`|---|---|`）保持不變
+- 單元格內的行內程式碼受保護
+- 表格結構（管道符號和對齊）自動維護
 
-**完整表格**：選取整個表格 → 使用任何翻譯指令 → 結構保留
+**完整表格**：選取整個表格 → 使用任何翻譯指令 → 結構保留、內容翻譯
 **部分選取**：選取特定行/列 → 使用任何翻譯指令 → 僅翻譯選取內容
 
 **範例：**
 ```markdown
 翻譯前：
-| Feature | Description |
-| ------- | ----------- |
-| Login   | User authentication |
+| Feature | Description | Code |
+| ------- | ----------- | ---- |
+| Login   | User authentication | `auth.login()` |
 
 翻譯後（轉繁體中文）：
-| 功能 | 說明 |
-| ------- | ----------- |
-| 登入   | 用戶身份驗證 |
+| 功能 | 說明 | 程式碼 |
+| ------- | ----------- | ---- |
+| 登入   | 用戶身份驗證 | `auth.login()` |
 ```
 
-**運作方式**：外掛會自動保護所有 Obsidian 語法、程式碼區塊、連結、檔案路徑和技術關鍵字，無論是全頁或選取翻譯。
+**運作方式**：外掛使用逐格翻譯策略，將每個表格單元格分別發送到 DeepL，確保表格結構完整的同時翻譯內容。所有 Obsidian 語法、程式碼區塊、連結和檔案路徑都會自動保護。
 
 ### 支援語言
 
@@ -237,11 +255,17 @@ Output: REST API 返回 JSON 回應
 
 ### 設定選項
 
-**可調整項目**：
+**基本設定**：
 - DeepL API 金鑰
 - API 類型（免費/專業版）
+- 測試連線
 - 預設目標語言
-- 技術關鍵字（逗號分隔）
+
+**進階設定**（選用）：
+- 模型類型：選擇翻譯品質（預設、品質優化、速度優化）
+- 正式程度：選擇翻譯的正式程度（預設、更正式、更隨意）
+- 上下文：提供額外上下文以提高翻譯準確度
+- 詞彙表 ID：使用 DeepL 詞彙表以確保術語一致性
 
 ### 範例
 

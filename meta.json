@@ -6,7 +6,7 @@
       "format": "esm"
     },
     "main.ts": {
-      "bytes": 24811,
+      "bytes": 34638,
       "imports": [
         {
           "path": "obsidian",
@@ -35,13 +35,13 @@
       "entryPoint": "main.ts",
       "inputs": {
         "node_modules/opencc-js/dist/esm/full.js": {
-          "bytesInOutput": 2105635
+          "bytesInOutput": 2105656
         },
         "main.ts": {
-          "bytesInOutput": 11114
+          "bytesInOutput": 15533
         }
       },
-      "bytes": 2117330
+      "bytes": 2121770
     }
   }
 }

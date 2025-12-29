@@ -6,6 +6,19 @@ interface MyPluginSettings {
 	deepLApiType: 'free' | 'pro';
 	defaultTargetLang: string;
 	technicalKeywords: string; // 逗號分隔的技術關鍵字清單
+	// 新增：可調整的 curl 參數
+	preserveFormatting: boolean;
+	splitSentences: string;
+	tagHandling: string;
+	nonSplittingTags: string;
+	ignoreTags: string;
+	outlineDetection: boolean;
+	formality: string;
+	modelType: string;
+	context: string;
+	glossaryId: string;
+	styleId: string;
+	customInstructions: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -13,6 +26,19 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	deepLApiType: 'free',
 	defaultTargetLang: 'ZH-HANT', // 預設轉繁體中文
 	technicalKeywords: 'API, SDK, REST, HTTP, JSON, XML, CSS, HTML, JavaScript, TypeScript, Python, React, Vue, Angular, Node.js, npm, Git, GitHub', // 預設技術關鍵字
+	// 新增參數的預設值
+	preserveFormatting: true,
+	splitSentences: 'nonewlines',
+	tagHandling: 'html',
+	nonSplittingTags: '',
+	ignoreTags: '',
+	outlineDetection: false,
+	formality: 'default',
+	modelType: '',
+	context: '',
+	glossaryId: '',
+	styleId: '',
+	customInstructions: '',
 }
 
 // --- 主插件類別 ---
@@ -78,14 +104,37 @@ export default class TranslatePlugin extends Plugin {
 			this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor) => {
 				const selection = editor.getSelection();
 				if (selection) {
-					// DeepL 翻譯選項
+					// DeepL 翻譯選項 - 使用子選單
 					menu.addItem((item) => {
 						item
-							.setTitle(`翻譯到 ${this.settings.defaultTargetLang}`)
-							.setIcon("languages")
-							.onClick(async () => {
-								await this.processDeepLTranslation(editor, selection, this.settings.defaultTargetLang, false);
+							.setTitle('翻譯到')
+							.setIcon("languages");
+
+						// 創建語言選擇子選單
+						const languageOptions = [
+							{ code: 'ZH-HANT', name: '繁體中文 (Traditional Chinese)' },
+							{ code: 'ZH', name: '簡體中文 (Simplified Chinese)' },
+							{ code: 'EN', name: '英文 (English)' },
+							{ code: 'FR', name: '法文 (Français)' },
+							{ code: 'DE', name: '德文 (Deutsch)' },
+							{ code: 'JA', name: '日文 (日本語)' },
+						];
+
+						// 為每個語言創建子選單項目
+						const submenu = (item as any).setSubmenu();
+						languageOptions.forEach(lang => {
+							submenu.addItem((subitem: any) => {
+								// 標記預設語言
+								const isDefault = lang.code === this.settings.defaultTargetLang;
+								const title = isDefault ? `★ ${lang.name}` : lang.name;
+
+								subitem
+									.setTitle(title)
+									.onClick(async () => {
+										await this.processDeepLTranslation(editor, selection, lang.code, false);
+									});
 							});
+						});
 					});
 
 					// OpenCC 簡繁轉換選項
@@ -155,60 +204,23 @@ export default class TranslatePlugin extends Plugin {
 		return { text: result, index: placeholderIndex, separators };
 	}
 
-	// --- 恢復表格分隔行（使用 UUID 和多級回退策略）---
+	// --- 恢復表格分隔行（使用 Unicode 字符匹配）---
 	restoreTableSeparators(text: string, separators: Map<string, string>): string {
 		let lines = text.split('\n');
-		let restoredCount = 0;
 
-		// 第一級：嘗試精確 UUID 匹配
-		separators.forEach((originalContent, uuid) => {
-			const exactMarker = `XXSEPARATORLINEXX${uuid}XX`;
+		// 查找並恢復分隔行（▓字符組成的行）
+		separators.forEach((originalContent, placeholderId) => {
 			for (let i = 0; i < lines.length; i++) {
-				if (lines[i].includes(exactMarker)) {
+				// 檢查是否整行都是▓字符
+				if (lines[i].trim() && /^▓+$/.test(lines[i].trim())) {
 					lines[i] = originalContent;
-					restoredCount++;
-					separators.delete(uuid); // 標記為已恢復
+					separators.delete(placeholderId);
 					break;
 				}
 			}
 		});
 
-		// 第二級：模糊匹配（DeepL 可能在 UUID 中添加空格）
-		if (separators.size > 0) {
-			separators.forEach((originalContent, uuid) => {
-				const flexiblePattern = `XXSEPARATORLINEXX\\s*${uuid.replace(/-/g, '\\s*-\\s*')}\\s*XX`;
-				const regex = new RegExp(flexiblePattern, 'g');
-				
-				for (let i = 0; i < lines.length; i++) {
-					if (regex.test(lines[i])) {
-						lines[i] = originalContent;
-						restoredCount++;
-						separators.delete(uuid);
-						break;
-					}
-				}
-			});
-		}
-
-		// 第三級：模式匹配（尋找任何遺留的 SEPARATORLINE 標記）
-		if (separators.size > 0) {
-			const separatorMarkerPattern = /XXSEPARATORLINEXX[0-9a-fA-F-]+XX/g;
-			
-			for (let i = 0; i < lines.length; i++) {
-				const match = lines[i].match(separatorMarkerPattern);
-				if (match) {
-					// 找到最近的未恢復分隔符
-					const firstAvailable = separators.keys().next().value;
-					if (firstAvailable) {
-						lines[i] = separators.get(firstAvailable)!;
-						restoredCount++;
-						separators.delete(firstAvailable);
-					}
-				}
-			}
-		}
-
-		// 第四級：智能重建（如果仍有遺留的分隔符）
+		// 如果還有未匹配的分隔符，使用智能重建
 		if (separators.size > 0) {
 			lines = this.rebuildMissingSeparators(lines, separators);
 		}
@@ -380,87 +392,66 @@ export default class TranslatePlugin extends Plugin {
 		return repairedLines.join('\n');
 	}
 
-	// --- 內容保護功能（保護程式碼、連結、HTML、路徑等不翻譯）---
+	// --- 內容保護功能（改進版本）---
 	protectContent(text: string): { protectedText: string; placeholderMap: Map<string, string>; separators: Map<string, string> } {
 		const placeholderMap = new Map<string, string>();
+		const separators = new Map<string, string>();
 		let protectedText = text;
 		let placeholderIndex = 0;
 
-		// 先處理表格
-		const tableResult = this.handleTableTranslation(protectedText, placeholderMap, placeholderIndex);
-		protectedText = tableResult.text;
-		placeholderIndex = tableResult.index;
-		const separators = tableResult.separators;
+		// 使用 Unicode 字符作為佔位符，DeepL 不會在這些字符處分行
+		const PIPE_PLACEHOLDER = '█'; // Unicode 實心方塊
+		const SEPARATOR_PLACEHOLDER = '▓'; // Unicode 中等陰影方塊
 
-		// 保護規則（順序很重要！）
-		const protectionRules = [
-			// 1. 程式碼區塊（三個反引號）
-			{ name: 'CODEBLOCK', regex: /```[\s\S]*?```/g },
+		// 處理表格結構 - 只保護管道符號和分隔行，允許內容被翻譯
+		const lines = protectedText.split('\n');
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
 
-			// 2. 行內程式碼（單個反引號）
-			{ name: 'INLINECODE', regex: /`[^`\n]+?`/g },
+			// 檢測並保護表格分隔行 (例如: |---|---|)
+			if (/^\|[\s|:-]+\|[ \t]*$/.test(line)) {
+				const placeholderId = `SEP${placeholderIndex++}`;
+				separators.set(placeholderId, line);
+				// 用等長的▓字符串替換，保持視覺寬度
+				const replacement = SEPARATOR_PLACEHOLDER.repeat(line.length);
+				placeholderMap.set(placeholderId, replacement);
+				lines[i] = replacement;
+			}
+			// 檢測表格內容行，保護管道符號但允許內容翻譯
+			else if (/^\|(.+)\|[ \t]*$/.test(line)) {
+				// 直接將所有管道符號替換為 █
+				lines[i] = line.replace(/\|/g, PIPE_PLACEHOLDER);
+			}
+		}
 
-			// 3. Obsidian Wikilinks（包含嵌入）: [[link]] 或 [[link|alias]] 或 ![[embed]]
-			{ name: 'WIKILINK', regex: /!?\[\[([^\]]+)\]\]/g },
+		protectedText = lines.join('\n');
 
-			// 4. Markdown 連結 [text](url)
-			{ name: 'LINK', regex: /\[([^\]]*)\]\(([^\)]+)\)/g },
-
-			// 5. Obsidian Callouts: >[!note], >[!warning], >[!quote] 等
-			{ name: 'CALLOUT', regex: /^>\s*\[![\w-]+\][^\n]*/gm },
-
-			// 6. Obsidian Tags: #tag 或 #nested/tag
-			{ name: 'TAG', regex: /#[\w\/-]+/g },
-
-			// 7. Obsidian Block References: ^block-id
-			{ name: 'BLOCKREF', regex: /\^[\w-]+/g },
-
-			// 8. HTML 標籤
-			{ name: 'HTMLTAG', regex: /<[^>]+>/g },
-
-			// 9. 檔案路徑（Windows: C:\path\to\file, Unix: /path/to/file, 相對: ./path or ../path）
-			{ name: 'FILEPATH', regex: /(?:[A-Z]:\\(?:[^\s\\/:*?"<>|]+\\)*[^\s\\/:*?"<>|]*)|(?:\.{0,2}\/(?:[^\s\/]+\/)*[^\s\/]*)|(?:\/(?:[^\s\/]+\/)*[^\s\/]+)/g },
-		];
-
-		// 依序套用保護規則（使用 matchAll 配合索引位置，從後往前替換）
-		protectionRules.forEach(rule => {
-			const matches = Array.from(protectedText.matchAll(rule.regex));
-
-			// 從後往前替換，避免索引位置變化
-			matches.reverse().forEach(match => {
-				const placeholder = `XX${rule.name}XX${placeholderIndex}XX${rule.name}XX`;
-				placeholderIndex++;
-				placeholderMap.set(placeholder, match[0]);
-
-				// 使用索引位置精確替換
-				const start = match.index!;
-				const end = start + match[0].length;
-				protectedText = protectedText.substring(0, start) + placeholder + protectedText.substring(end);
-			});
+		// 處理行內程式碼
+		const codeRegex = /`[^`\n]+?`/g;
+		const codeMatches = Array.from(protectedText.matchAll(codeRegex));
+		
+		codeMatches.reverse().forEach(match => {
+			const codeId = `CODE-${placeholderIndex++}`;
+			const codePlaceholder = `__${codeId}__`;
+			placeholderMap.set(codePlaceholder, match[0]);
+			
+			const start = match.index!;
+			const end = start + match[0].length;
+			protectedText = protectedText.substring(0, start) + codePlaceholder + protectedText.substring(end);
 		});
 
-		// 保護技術關鍵字
-		const keywords = this.settings.technicalKeywords
-			.split(',')
-			.map(k => k.trim())
-			.filter(k => k.length > 0);
-
-		keywords.forEach((keyword) => {
-			// 使用不區分大小寫的正則表達式來匹配關鍵字（保留原始大小寫）
-			const regex = new RegExp(`\\b(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'gi');
-			const matches = Array.from(protectedText.matchAll(regex));
-
-			// 從後往前替換，避免索引位置變化
-			matches.reverse().forEach(match => {
-				const placeholder = `XXKEYWORDXX${placeholderIndex}XXKEYWORDXX`;
-				placeholderIndex++;
-				placeholderMap.set(placeholder, match[0]);
-
-				// 使用索引位置精確替換
-				const start = match.index!;
-				const end = start + match[0].length;
-				protectedText = protectedText.substring(0, start) + placeholder + protectedText.substring(end);
-			});
+		// 處理程式碼區塊
+		const codeBlockRegex = /```[\s\S]*?```/g;
+		const codeBlockMatches = Array.from(protectedText.matchAll(codeBlockRegex));
+		
+		codeBlockMatches.reverse().forEach(match => {
+			const blockId = `BLOCK-${placeholderIndex++}`;
+			const blockPlaceholder = `__${blockId}__`;
+			placeholderMap.set(blockPlaceholder, match[0]);
+			
+			const start = match.index!;
+			const end = start + match[0].length;
+			protectedText = protectedText.substring(0, start) + blockPlaceholder + protectedText.substring(end);
 		});
 
 		return { protectedText, placeholderMap, separators };
@@ -475,67 +466,302 @@ export default class TranslatePlugin extends Plugin {
 		return this.openccConverter;
 	}
 
-	restoreContent(text: string, placeholderMap: Map<string, string>, tablePipesOnly: boolean = false): string {
+	restoreContent(text: string, placeholderMap: Map<string, string>): string {
 		let restoredText = text;
 
-		// 恢復所有受保護的內容
-		placeholderMap.forEach((original, placeholder) => {
-			// 如果只恢復表格管道符，跳過其他類型
-			if (tablePipesOnly && !placeholder.includes('TABLEPIPE')) {
-				return;
-			}
-			// 如果不是恢復表格管道，跳過表格管道符（它們已經被恢復過了）
-			if (!tablePipesOnly && placeholder.includes('TABLEPIPE')) {
-				return;
-			}
+		// 恢復表格管道符號 (█ → |)
+		restoredText = restoredText.replace(/█/g, '|');
 
-			// 首先嘗試精確匹配（最常見的情況）
-			if (restoredText.includes(placeholder)) {
-				restoredText = restoredText.split(placeholder).join(original);
-				return;
+		// 恢復程式碼區塊佔位符 (格式: __CODE-XX__)
+		placeholderMap.forEach((originalContent, placeholder) => {
+			if (placeholder.startsWith('__') && placeholder.endsWith('__')) {
+				restoredText = restoredText.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), originalContent);
 			}
-
-			// DeepL 可能在佔位符中添加空格或改變大小寫
-			// 將佔位符轉換為允許空格和不區分大小寫的正則表達式
-			const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-			// 允許 XX 之間有任意空格
-			const flexiblePattern = escapedPlaceholder.replace(/XX/g, 'XX\\s*');
-			// 不區分大小寫匹配（DeepL 翻譯到中文時會將佔位符變成小寫！）
-			const regex = new RegExp(flexiblePattern, 'gi');
-			restoredText = restoredText.replace(regex, original);
 		});
 
 		return restoredText;
 	}
 
-	// --- DeepL 翻譯處理 ---
+	// --- 多級占位符恢復策略 ---
+	restorePlaceholder(text: string, placeholderInfo: PlaceholderInfo, attemptLevel: number): { success: boolean; text: string } {
+		let restoredText = text;
+		const placeholderId = placeholderInfo.id;
+		const originalContent = placeholderInfo.content;
+
+		// 第一級：精確匹配完整標籤
+		if (attemptLevel === 0) {
+			const exactPattern = `<x id="${placeholderId}" type="${placeholderInfo.type}">([^<]+)</x>`;
+			const regex = new RegExp(exactPattern, 'g');
+			restoredText = restoredText.replace(regex, originalContent);
+			
+			return {
+				success: restoredText !== text,
+				text: restoredText
+			};
+		}
+
+		// 第二級：寬鬆匹配（允許屬性順序變化和空格）
+		if (attemptLevel === 1) {
+			const patterns = [
+				// 允許屬性順序變化
+				`<x[^>]*id="${placeholderId}"[^>]*type="${placeholderInfo.type}"[^>]*>([^<]+)</x>`,
+				`<x[^>]*type="${placeholderInfo.type}"[^>]*id="${placeholderId}"[^>]*>([^<]+)</x>`,
+				// 允許額外屬性
+				`<x[^>]*id="${placeholderId}"[^>]*>([^<]+)</x>`,
+				`<x[^>]*type="${placeholderInfo.type}"[^>]*>([^<]+)</x>`
+			];
+
+			for (const pattern of patterns) {
+				const regex = new RegExp(pattern, 'gi');
+				const before = restoredText;
+				restoredText = restoredText.replace(regex, originalContent);
+				if (restoredText !== before) {
+					return {
+						success: true,
+						text: restoredText
+					};
+				}
+			}
+		}
+
+		// 第三級：模糊匹配（基於內容和上下文）
+		if (attemptLevel === 2) {
+			// 對於特定類型，使用內容匹配
+			if (placeholderInfo.type === 'PIPE') {
+				// 查找可能的管道符占位符
+				const pipePattern = /<x[^>]*type=["']PIPE["'][^>]*>\|<\/x>/gi;
+				const matches = Array.from(restoredText.matchAll(pipePattern));
+				
+				// 從後往前替換，避免位置變化
+				matches.reverse().forEach(match => {
+					if (match.index !== undefined) {
+						const start = match.index;
+						const end = start + match[0].length;
+						restoredText = restoredText.substring(0, start) + '|' + restoredText.substring(end);
+					}
+				});
+				
+				return {
+					success: matches.length > 0,
+					text: restoredText
+				};
+			}
+
+			// 對於其他類型，基於內容匹配
+			if (originalContent.length > 0) {
+				// 查找包含原始內容的標籤
+				const contentPattern = new RegExp(`<x[^>]*id="${placeholderId}"[^>]*>.*?${this.escapeRegex(originalContent)}.*?</x>`, 'gi');
+				const before = restoredText;
+				restoredText = restoredText.replace(contentPattern, originalContent);
+				
+				return {
+					success: restoredText !== before,
+					text: restoredText
+				};
+			}
+		}
+
+		return {
+			success: false,
+			text: restoredText
+		};
+	}
+
+	// --- 驗證恢復結果 ---
+	validateRestoration(text: string, placeholderMap: Map<string, PlaceholderInfo>, tablePipesOnly: boolean): { isValid: boolean; unrestoredCount: number; unrestoredTypes: string[] } {
+		const unrestoredTypes: string[] = [];
+		let unrestoredCount = 0;
+
+		placeholderMap.forEach((placeholderInfo, placeholderId) => {
+			// 如果只恢復表格管道符，跳過其他類型
+			if (tablePipesOnly && placeholderInfo.type !== 'PIPE') {
+				return;
+			}
+			// 如果不是恢復表格管道，跳過表格管道符
+			if (!tablePipesOnly && placeholderInfo.type === 'PIPE') {
+				return;
+			}
+
+			// 檢查是否還有未恢復的占位符
+			const patterns = [
+				`<x[^>]*id="${placeholderId}"[^>]*>`,
+				`<x[^>]*type="${placeholderInfo.type}"[^>]*id="${placeholderId}"[^>]*>`
+			];
+
+			const hasUnrestored = patterns.some(pattern => {
+				const regex = new RegExp(pattern, 'i');
+				return regex.test(text);
+			});
+
+			if (hasUnrestored) {
+				unrestoredCount++;
+				if (!unrestoredTypes.includes(placeholderInfo.type)) {
+					unrestoredTypes.push(placeholderInfo.type);
+				}
+			}
+		});
+
+		return {
+			isValid: unrestoredCount === 0,
+			unrestoredCount,
+			unrestoredTypes
+		};
+	}
+
+	// --- 模糊恢復 ---
+	fuzzyRestore(text: string, placeholderMap: Map<string, PlaceholderInfo>, tablePipesOnly: boolean): string {
+		let restoredText = text;
+
+		placeholderMap.forEach((placeholderInfo, placeholderId) => {
+			// 如果只恢復表格管道符，跳過其他類型
+			if (tablePipesOnly && placeholderInfo.type !== 'PIPE') {
+				return;
+			}
+			// 如果不是恢復表格管道，跳過表格管道符
+			if (!tablePipesOnly && placeholderInfo.type === 'PIPE') {
+				return;
+			}
+
+			// 基於類型的特殊恢復邏輯
+			switch (placeholderInfo.type) {
+				case 'PIPE':
+					// 查找任何可能的管道符占位符
+					restoredText = restoredText.replace(/<x[^>]*type=["']PIPE["'][^>]*>\|<\/x>/gi, '|');
+					break;
+
+				default:
+					// 對於其他類型，移除未恢復的標籤
+					const removePattern = new RegExp(`<x[^>]*id="${placeholderId}"[^>]*>[^<]*</x>`, 'gi');
+					restoredText = restoredText.replace(removePattern, placeholderInfo.content);
+					break;
+			}
+		});
+
+		return restoredText;
+	}
+	
+		// --- DeepL 翻譯處理 ---
 	async processDeepLTranslation(editor: Editor, text: string, targetLang: string, isFullPage: boolean) {
 		new Notice(`翻譯中 (DeepL)...`);
 
 		try {
-			// 1. 保護所有需要保留的內容
-			const { protectedText, placeholderMap, separators } = this.protectContent(text);
+			// Step 1: 先保護所有程式碼區塊（多行）
+			let workingText = text;
+			const codeBlockMap = new Map<string, string>();
+			let codeBlockIndex = 0;
 
-			// 2. 使用 DeepL 翻譯
-			const translatedText = await this.callDeepL(protectedText, targetLang);
+			// 保護多行程式碼區塊 (```...```)
+			const codeBlockRegex = /```[\s\S]*?```/g;
+			const codeBlockMatches = Array.from(workingText.matchAll(codeBlockRegex));
+			codeBlockMatches.reverse().forEach(match => {
+				const placeholder = `__CODEBLOCK${codeBlockIndex++}__`;
+				codeBlockMap.set(placeholder, match[0]);
+				workingText = workingText.substring(0, match.index!) + placeholder + workingText.substring(match.index! + match[0].length);
+			});
 
-			// 3. 先恢復表格分隔行（UUID 標記）
-			let restoredText = this.restoreTableSeparators(translatedText, separators);
+			// Step 2: 逐行翻譯表格以保持結構
+			const lines = workingText.split('\n');
+			const translatedLines: string[] = [];
 
-			// 4. 恢復表格管道符（必須在修復表格前完成，否則修復功能無法識別表格行）
-			restoredText = this.restoreContent(restoredText, placeholderMap, true);
+			for (const line of lines) {
+				// 跳過包含程式碼區塊佔位符的行（不翻譯）
+				if (/^__CODEBLOCK\d+__$/.test(line.trim())) {
+					translatedLines.push(line);
+					continue;
+				}
 
-			// 5. 驗證並修復表格結構（現在可以正確識別 | 符號）
-			restoredText = this.repairTableStructure(restoredText);
+				// 檢查是否為表格分隔行 (不翻譯)
+				if (/^\|[\s|:-]+\|[ \t]*$/.test(line)) {
+					translatedLines.push(line);
+					continue;
+				}
 
-			// 6. 恢復其他受保護的內容（程式碼、連結等）
-			restoredText = this.restoreContent(restoredText, placeholderMap, false);
+				// 檢查是否為表格行 (保護管道符號，翻譯內容)
+				if (/^\|(.+)\|[ \t]*$/.test(line)) {
+					// 保護行內程式碼
+					let protectedLine = line;
+					const inlineCodeMap = new Map<string, string>();
+					let inlineCodeIndex = 0;
 
-			// 7. 更新內容
+					const codeMatches = Array.from(protectedLine.matchAll(/`[^`\n]+?`/g));
+					codeMatches.reverse().forEach(match => {
+						const placeholder = `__CODE${inlineCodeIndex++}__`;
+						inlineCodeMap.set(placeholder, match[0]);
+						protectedLine = protectedLine.substring(0, match.index!) + placeholder + protectedLine.substring(match.index! + match[0].length);
+					});
+
+					// 保護管道符號
+					const cells = protectedLine.split('|').map(cell => cell.trim());
+
+					// 翻譯每個單元格
+					const translatedCells: string[] = [];
+					for (const cell of cells) {
+						if (cell === '') {
+							translatedCells.push('');
+						} else {
+							try {
+								const translated = await this.callDeepL(cell, targetLang);
+								translatedCells.push(translated);
+							} catch (error) {
+								translatedCells.push(cell); // 翻譯失敗時保留原文
+							}
+						}
+					}
+
+					// 重組表格行
+					let restoredLine = '| ' + translatedCells.slice(1, -1).join(' | ') + ' |';
+
+					// 恢復行內程式碼
+					inlineCodeMap.forEach((originalCode, placeholder) => {
+						restoredLine = restoredLine.replace(placeholder, originalCode);
+					});
+
+					translatedLines.push(restoredLine);
+				} else {
+					// 非表格行，正常翻譯（但跳過程式碼區塊）
+					if (line.trim() === '') {
+						translatedLines.push(line);
+					} else {
+						try {
+							// 保護行內程式碼
+							let protectedLine = line;
+							const inlineCodeMap = new Map<string, string>();
+							let inlineCodeIndex = 0;
+
+							const codeMatches = Array.from(protectedLine.matchAll(/`[^`\n]+?`/g));
+							codeMatches.reverse().forEach(match => {
+								const placeholder = `__INLINECODE${inlineCodeIndex++}__`;
+								inlineCodeMap.set(placeholder, match[0]);
+								protectedLine = protectedLine.substring(0, match.index!) + placeholder + protectedLine.substring(match.index! + match[0].length);
+							});
+
+							const translated = await this.callDeepL(protectedLine, targetLang);
+
+							// 恢復行內程式碼
+							let restoredLine = translated;
+							inlineCodeMap.forEach((originalCode, placeholder) => {
+								restoredLine = restoredLine.replace(placeholder, originalCode);
+							});
+
+							translatedLines.push(restoredLine);
+						} catch (error) {
+							translatedLines.push(line);
+						}
+					}
+				}
+			}
+
+			// Step 3: 恢復多行程式碼區塊
+			let finalText = translatedLines.join('\n');
+			codeBlockMap.forEach((originalBlock, placeholder) => {
+				finalText = finalText.replace(placeholder, originalBlock);
+			});
+
+			// 更新內容
 			if (isFullPage) {
-				editor.setValue(restoredText);
+				editor.setValue(finalText);
 			} else {
-				editor.replaceSelection(restoredText);
+				editor.replaceSelection(finalText);
 			}
 
 			new Notice('翻譯完成！');
@@ -558,19 +784,13 @@ export default class TranslatePlugin extends Plugin {
 			const converter = await this.getOpenCCConverter();
 			const convertedText = converter(protectedText);
 
-			// 3. 先恢復表格分隔行（UUID 標記）
-			let restoredText = this.restoreTableSeparators(convertedText, separators);
+			// 3. 先恢復管道符號和其他佔位符
+			let restoredText = this.restoreContent(convertedText, placeholderMap);
 
-			// 4. 恢復表格管道符（必須在修復表格前完成，否則修復功能無法識別表格行）
-			restoredText = this.restoreContent(restoredText, placeholderMap, true);
+			// 4. 恢復表格分隔行
+			restoredText = this.restoreTableSeparators(restoredText, separators);
 
-			// 5. 驗證並修復表格結構（現在可以正確識別 | 符號）
-			restoredText = this.repairTableStructure(restoredText);
-
-			// 6. 恢復其他受保護的內容（程式碼、連結等）
-			restoredText = this.restoreContent(restoredText, placeholderMap, false);
-
-			// 7. 更新內容
+			// 5. 更新內容
 			if (isFullPage) {
 				editor.setValue(restoredText);
 			} else {
@@ -595,27 +815,96 @@ export default class TranslatePlugin extends Plugin {
 			? 'https://api-free.deepl.com/v2/translate'
 			: 'https://api.deepl.com/v2/translate';
 
-		const params = new URLSearchParams();
-		params.append('text', text);
-		params.append('target_lang', targetLang);
-		params.append('enable_beta_languages', 'true'); // 啟用 Beta 語言支援（如 ZH-HANT）
+		// 🎯 使用JSON格式请求，使用可调整的参数
+		const requestData: any = {
+			text: [text], // 必须是数组格式
+			target_lang: targetLang,
+			enable_beta_languages: true,
+			show_billed_characters: true,
+		};
 
-		const response = await requestUrl({
-			url: endpoint,
-			method: 'POST',
-			headers: {
-				'Authorization': `DeepL-Auth-Key ${this.settings.deepLApiKey}`,
-				'Content-Type': 'application/x-www-form-urlencoded'
-			},
-			body: params.toString()
-		});
-
-		if (response.status !== 200) {
-			throw new Error(`API Error: ${response.status} ${response.text}`);
+		// 根据设置添加可选参数
+		if (this.settings.preserveFormatting !== undefined) {
+			requestData.preserve_formatting = this.settings.preserveFormatting;
+		}
+		
+		if (this.settings.splitSentences) {
+			requestData.split_sentences = this.settings.splitSentences;
+		}
+		
+		if (this.settings.tagHandling) {
+			requestData.tag_handling = this.settings.tagHandling;
+			requestData.tag_handling_version = "v1";
+		}
+		
+		if (this.settings.nonSplittingTags) {
+			requestData.non_splitting_tags = this.settings.nonSplittingTags.split(',').map(tag => tag.trim()).filter(tag => tag);
+		}
+		
+		if (this.settings.ignoreTags) {
+			requestData.ignore_tags = this.settings.ignoreTags.split(',').map(tag => tag.trim()).filter(tag => tag);
+		}
+		
+		if (this.settings.outlineDetection !== undefined) {
+			requestData.outline_detection = this.settings.outlineDetection;
+		}
+		
+		if (this.settings.formality) {
+			requestData.formality = this.settings.formality;
+		}
+		
+		if (this.settings.modelType) {
+			requestData.model_type = this.settings.modelType;
+		}
+		
+		if (this.settings.context) {
+			requestData.context = this.settings.context;
+		}
+		
+		if (this.settings.glossaryId) {
+			requestData.glossary_id = this.settings.glossaryId;
+		}
+		
+		if (this.settings.styleId) {
+			requestData.style_id = this.settings.styleId;
+		}
+		
+		if (this.settings.customInstructions) {
+			requestData.custom_instructions = this.settings.customInstructions.split(',').map(inst => inst.trim()).filter(inst => inst);
 		}
 
-		const data = response.json;
-		return data.translations[0].text;
+		try {
+			const response = await requestUrl({
+				url: endpoint,
+				method: 'POST',
+				headers: {
+					'Authorization': `DeepL-Auth-Key ${this.settings.deepLApiKey}`,
+					'Content-Type': 'application/json' // 使用JSON格式
+				},
+				body: JSON.stringify(requestData) // 序列化为JSON
+			});
+
+			if (response.status !== 200) {
+				console.error('DeepL API Response:', response);
+				throw new Error(`API Error: ${response.status} ${response.text}`);
+			}
+
+			const data = response.json;
+			if (!data.translations || !data.translations[0]) {
+				throw new Error('Invalid API response: missing translations');
+			}
+
+			return data.translations[0].text;
+		} catch (error) {
+			console.error('DeepL API call failed:', error);
+			throw error;
+		}
+	}
+
+	// --- 判断是否为拉丁语系到亚洲语言的翻译 ---
+	isLatinToAsianTranslation(targetLang: string): boolean {
+		const asianLanguages = ['ZH', 'ZH-HANT', 'JA', 'KO'];
+		return asianLanguages.includes(targetLang);
 	}
 
 	// --- 測試 DeepL 連線功能 ---
@@ -695,6 +984,9 @@ class TranslateSettingTab extends PluginSettingTab {
 
 		containerEl.createEl('h2', {text: 'DeepL & OpenCC Settings'});
 
+		// === Basic Settings ===
+		containerEl.createEl('h3', {text: 'Basic Settings'});
+
 		new Setting(containerEl)
 			.setName('DeepL API Key')
 			.setDesc('Get your key from deepl.com')
@@ -762,14 +1054,52 @@ class TranslateSettingTab extends PluginSettingTab {
 					new Notice('Default language changed. Reload Obsidian to update command names.');
 				}));
 
+		// === Advanced Settings ===
+		containerEl.createEl('h3', {text: 'Advanced Settings'});
+
 		new Setting(containerEl)
-			.setName('Technical Keywords')
-			.setDesc('Comma-separated list of keywords to preserve (keep in English) during translation.')
-			.addTextArea(text => text
-				.setPlaceholder('API, SDK, REST, HTTP...')
-				.setValue(this.plugin.settings.technicalKeywords)
+			.setName('Model Type')
+			.setDesc('Translation model quality. Options: "", "quality_optimized", "speed_optimized". Leave empty for default')
+			.addText(text => text
+				.setPlaceholder('quality_optimized')
+				.setValue(this.plugin.settings.modelType)
 				.onChange(async (value) => {
-					this.plugin.settings.technicalKeywords = value;
+					this.plugin.settings.modelType = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Formality')
+			.setDesc('Translation formality level for supported languages')
+			.addDropdown(dropDown => dropDown
+				.addOption('default', 'Default')
+				.addOption('more', 'More Formal')
+				.addOption('less', 'Less Formal')
+				.setValue(this.plugin.settings.formality)
+				.onChange(async (value) => {
+					this.plugin.settings.formality = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Context')
+			.setDesc('Additional context for better translation (optional)')
+			.addText(text => text
+				.setPlaceholder('This is a technical document...')
+				.setValue(this.plugin.settings.context)
+				.onChange(async (value) => {
+					this.plugin.settings.context = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Glossary ID')
+			.setDesc('UUID of DeepL glossary for consistent terminology (optional)')
+			.addText(text => text
+				.setPlaceholder('def3a26b-3e84-45b3-84ae-0c0aaf3525f7')
+				.setValue(this.plugin.settings.glossaryId)
+				.onChange(async (value) => {
+					this.plugin.settings.glossaryId = value;
 					await this.plugin.saveSettings();
 				}));
 	}
