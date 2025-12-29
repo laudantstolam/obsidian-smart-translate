@@ -35,7 +35,7 @@ As a prompt engineer, I always copy paste csdn stuff, for quick localization, I 
 
 |EN -> FR (with command)|zh-CN -> zh-TW (with command)|
 |---|---|
-|![](demo/E2t02.gif)|![](demo/S2T02.gif)|
+|![](demo/E2T02.gif)|![](demo/S2T02.gif)|
 
 - **DeepL Translation**: Professional translation powered by DeepL API
 - **Smart Protection**: Automatically preserves code blocks, inline code, tables, links, and Obsidian syntax
@@ -128,7 +128,7 @@ Check the API at `https://api.example.com`
 
 |英文 -> 法文 (命令行)|簡體中文-> 繁體中文 (命令行)|
 |---|---|
-|![](demo/E2t02.gif)|![](demo/S2T02.gif)|
+|![](demo/E2T02.gif)|![](demo/S2T02.gif)|
 
 - **DeepL 翻譯**：使用 DeepL API 提供專業翻譯
 - **智慧保護**：自動保留程式碼區塊、行內程式碼、表格、連結和 Obsidian 語法
