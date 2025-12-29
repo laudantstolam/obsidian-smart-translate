@@ -321,28 +321,60 @@ export default class TranslatePlugin extends Plugin {
 	repairTableStructure(text: string): string {
 		const lines = text.split('\n');
 		const repairedLines = [...lines];
+		let inTable = false;
+		let tableHasSeparator = false;
+		let tableStartIndex = -1;
 
-		for (let i = 0; i < repairedLines.length - 1; i++) {
+		for (let i = 0; i < repairedLines.length; i++) {
 			const currentLine = repairedLines[i];
-			const nextLine = repairedLines[i + 1];
+			const isTableRow = /^\|(.+)\|[ \t]*$/.test(currentLine);
+			const isSeparator = /^\|[\s|:-]+\|[ \t]*$/.test(currentLine);
 
-			// 如果當前行是表格標題，下一行不是分隔符，且不是空行
-			if (/^\|(.+)\|[ \t]*$/.test(currentLine) && 
-				!/^\|[\s|:-]+\|[ \t]*$/.test(nextLine) && 
-				nextLine.trim() !== '') {
-				
-				// 自動生成分隔符
-				const pipeCount = (currentLine.match(/\|/g) || []).length;
-				let separator = '|';
-				
-				for (let j = 1; j < pipeCount - 1; j++) {
-					separator += '---|';
-				}
-				
-				// 在標題行後插入分隔符
-				repairedLines.splice(i + 1, 0, separator);
-				i++; // 跳過新插入的行
+			// 檢測表格開始
+			if (isTableRow && !isSeparator && !inTable) {
+				inTable = true;
+				tableHasSeparator = false;
+				tableStartIndex = i;
 			}
+			// 檢測分隔符
+			else if (isSeparator && inTable) {
+				tableHasSeparator = true;
+			}
+			// 檢測表格結束
+			else if (!isTableRow && !isSeparator && inTable) {
+				// 如果表格沒有分隔符，在第一行後插入
+				if (!tableHasSeparator && tableStartIndex >= 0) {
+					const headerLine = repairedLines[tableStartIndex];
+					const pipeCount = (headerLine.match(/\|/g) || []).length;
+					let separator = '|';
+
+					for (let j = 1; j < pipeCount - 1; j++) {
+						separator += '---|';
+					}
+
+					// 在標題行後插入分隔符
+					repairedLines.splice(tableStartIndex + 1, 0, separator);
+					i++; // 調整索引
+				}
+
+				// 重置狀態
+				inTable = false;
+				tableHasSeparator = false;
+				tableStartIndex = -1;
+			}
+		}
+
+		// 處理文件末尾的表格
+		if (inTable && !tableHasSeparator && tableStartIndex >= 0) {
+			const headerLine = repairedLines[tableStartIndex];
+			const pipeCount = (headerLine.match(/\|/g) || []).length;
+			let separator = '|';
+
+			for (let j = 1; j < pipeCount - 1; j++) {
+				separator += '---|';
+			}
+
+			repairedLines.splice(tableStartIndex + 1, 0, separator);
 		}
 
 		return repairedLines.join('\n');
@@ -443,23 +475,33 @@ export default class TranslatePlugin extends Plugin {
 		return this.openccConverter;
 	}
 
-	restoreContent(text: string, placeholderMap: Map<string, string>): string {
+	restoreContent(text: string, placeholderMap: Map<string, string>, tablePipesOnly: boolean = false): string {
 		let restoredText = text;
 
-		// 恢復所有受保護的內容（包括表格）
+		// 恢復所有受保護的內容
 		placeholderMap.forEach((original, placeholder) => {
+			// 如果只恢復表格管道符，跳過其他類型
+			if (tablePipesOnly && !placeholder.includes('TABLEPIPE')) {
+				return;
+			}
+			// 如果不是恢復表格管道，跳過表格管道符（它們已經被恢復過了）
+			if (!tablePipesOnly && placeholder.includes('TABLEPIPE')) {
+				return;
+			}
+
 			// 首先嘗試精確匹配（最常見的情況）
 			if (restoredText.includes(placeholder)) {
 				restoredText = restoredText.split(placeholder).join(original);
 				return;
 			}
 
-			// DeepL 可能在佔位符中添加空格，使用正則表達式處理
-			// 將佔位符轉換為允許空格的正則表達式
+			// DeepL 可能在佔位符中添加空格或改變大小寫
+			// 將佔位符轉換為允許空格和不區分大小寫的正則表達式
 			const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 			// 允許 XX 之間有任意空格
 			const flexiblePattern = escapedPlaceholder.replace(/XX/g, 'XX\\s*');
-			const regex = new RegExp(flexiblePattern, 'g');
+			// 不區分大小寫匹配（DeepL 翻譯到中文時會將佔位符變成小寫！）
+			const regex = new RegExp(flexiblePattern, 'gi');
 			restoredText = restoredText.replace(regex, original);
 		});
 
@@ -477,16 +519,19 @@ export default class TranslatePlugin extends Plugin {
 			// 2. 使用 DeepL 翻譯
 			const translatedText = await this.callDeepL(protectedText, targetLang);
 
-			// 3. 先恢復表格分隔行
+			// 3. 先恢復表格分隔行（UUID 標記）
 			let restoredText = this.restoreTableSeparators(translatedText, separators);
 
-			// 4. 驗證並修復表格結構
-			restoredText = this.repairTableStructure(restoredText);
-			
-			// 5. 再恢復其他受保護的內容
-			restoredText = this.restoreContent(restoredText, placeholderMap);
+			// 4. 恢復表格管道符（必須在修復表格前完成，否則修復功能無法識別表格行）
+			restoredText = this.restoreContent(restoredText, placeholderMap, true);
 
-			// 5. 更新內容
+			// 5. 驗證並修復表格結構（現在可以正確識別 | 符號）
+			restoredText = this.repairTableStructure(restoredText);
+
+			// 6. 恢復其他受保護的內容（程式碼、連結等）
+			restoredText = this.restoreContent(restoredText, placeholderMap, false);
+
+			// 7. 更新內容
 			if (isFullPage) {
 				editor.setValue(restoredText);
 			} else {
@@ -513,16 +558,19 @@ export default class TranslatePlugin extends Plugin {
 			const converter = await this.getOpenCCConverter();
 			const convertedText = converter(protectedText);
 
-			// 3. 先恢復表格分隔行
+			// 3. 先恢復表格分隔行（UUID 標記）
 			let restoredText = this.restoreTableSeparators(convertedText, separators);
 
-			// 4. 驗證並修復表格結構
-			restoredText = this.repairTableStructure(restoredText);
-			
-			// 5. 再恢復其他受保護的內容
-			restoredText = this.restoreContent(restoredText, placeholderMap);
+			// 4. 恢復表格管道符（必須在修復表格前完成，否則修復功能無法識別表格行）
+			restoredText = this.restoreContent(restoredText, placeholderMap, true);
 
-			// 5. 更新內容
+			// 5. 驗證並修復表格結構（現在可以正確識別 | 符號）
+			restoredText = this.repairTableStructure(restoredText);
+
+			// 6. 恢復其他受保護的內容（程式碼、連結等）
+			restoredText = this.restoreContent(restoredText, placeholderMap, false);
+
+			// 7. 更新內容
 			if (isFullPage) {
 				editor.setValue(restoredText);
 			} else {
