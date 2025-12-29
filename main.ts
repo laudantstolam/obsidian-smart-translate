@@ -399,11 +399,41 @@ export default class TranslatePlugin extends Plugin {
 		let protectedText = text;
 		let placeholderIndex = 0;
 
-		// 使用 Unicode 字符作為佔位符，DeepL 不會在這些字符處分行
+		// **IMPORTANT: 先保護程式碼區塊，避免其內容被表格處理修改**
+
+		// 1. 先處理程式碼區塊 (```...```)
+		const codeBlockRegex = /```[\s\S]*?```/g;
+		const codeBlockMatches = Array.from(protectedText.matchAll(codeBlockRegex));
+
+		codeBlockMatches.reverse().forEach(match => {
+			const blockId = `BLOCK-${placeholderIndex++}`;
+			const blockPlaceholder = `__${blockId}__`;
+			placeholderMap.set(blockPlaceholder, match[0]);
+
+			const start = match.index!;
+			const end = start + match[0].length;
+			protectedText = protectedText.substring(0, start) + blockPlaceholder + protectedText.substring(end);
+		});
+
+		// 2. 處理行內程式碼 (`...`)
+		const codeRegex = /`[^`\n]+?`/g;
+		const codeMatches = Array.from(protectedText.matchAll(codeRegex));
+
+		codeMatches.reverse().forEach(match => {
+			const codeId = `CODE-${placeholderIndex++}`;
+			const codePlaceholder = `__${codeId}__`;
+			placeholderMap.set(codePlaceholder, match[0]);
+
+			const start = match.index!;
+			const end = start + match[0].length;
+			protectedText = protectedText.substring(0, start) + codePlaceholder + protectedText.substring(end);
+		});
+
+		// 3. 最後處理表格結構 (現在程式碼已經被保護了)
+		// 使用 Unicode 字符作為佔位符
 		const PIPE_PLACEHOLDER = '█'; // Unicode 實心方塊
 		const SEPARATOR_PLACEHOLDER = '▓'; // Unicode 中等陰影方塊
 
-		// 處理表格結構 - 只保護管道符號和分隔行，允許內容被翻譯
 		const lines = protectedText.split('\n');
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
@@ -426,44 +456,43 @@ export default class TranslatePlugin extends Plugin {
 
 		protectedText = lines.join('\n');
 
-		// 處理行內程式碼
-		const codeRegex = /`[^`\n]+?`/g;
-		const codeMatches = Array.from(protectedText.matchAll(codeRegex));
-		
-		codeMatches.reverse().forEach(match => {
-			const codeId = `CODE-${placeholderIndex++}`;
-			const codePlaceholder = `__${codeId}__`;
-			placeholderMap.set(codePlaceholder, match[0]);
-			
-			const start = match.index!;
-			const end = start + match[0].length;
-			protectedText = protectedText.substring(0, start) + codePlaceholder + protectedText.substring(end);
-		});
-
-		// 處理程式碼區塊
-		const codeBlockRegex = /```[\s\S]*?```/g;
-		const codeBlockMatches = Array.from(protectedText.matchAll(codeBlockRegex));
-		
-		codeBlockMatches.reverse().forEach(match => {
-			const blockId = `BLOCK-${placeholderIndex++}`;
-			const blockPlaceholder = `__${blockId}__`;
-			placeholderMap.set(blockPlaceholder, match[0]);
-			
-			const start = match.index!;
-			const end = start + match[0].length;
-			protectedText = protectedText.substring(0, start) + blockPlaceholder + protectedText.substring(end);
-		});
-
 		return { protectedText, placeholderMap, separators };
 	}
 
 	// --- 懶加載 OpenCC（僅在需要時初始化）---
-	async getOpenCCConverter() {
-		if (!this.openccConverter) {
-			const OpenCC = await import('opencc-js');
-			this.openccConverter = OpenCC.Converter({ from: 'cn', to: 'twp' });
+	async getOpenCCConverter(direction: 'cn-to-tw' | 'tw-to-cn') {
+		const OpenCC = await import('opencc-js');
+		if (direction === 'cn-to-tw') {
+			return OpenCC.Converter({ from: 'cn', to: 'twp' });
+		} else {
+			return OpenCC.Converter({ from: 'twp', to: 'cn' });
 		}
-		return this.openccConverter;
+	}
+
+	// 偵測文字是簡體還是繁體
+	detectChineseVariant(text: string): 'simplified' | 'traditional' {
+		// 常見的簡體字
+		const simplifiedChars = ['国', '学', '会', '这', '们', '来', '现', '种', '时', '发', '经', '实', '际', '问', '题', '进', '过', '应', '该', '对', '认', '为', '产', '说', '后', '样', '动', '计', '两', '体', '机', '论'];
+		// 常見的繁體字
+		const traditionalChars = ['國', '學', '會', '這', '們', '來', '現', '種', '時', '發', '經', '實', '際', '問', '題', '進', '過', '應', '該', '對', '認', '為', '產', '說', '後', '樣', '動', '計', '兩', '體', '機', '論'];
+
+		let simplifiedCount = 0;
+		let traditionalCount = 0;
+
+		for (const char of simplifiedChars) {
+			if (text.includes(char)) simplifiedCount++;
+		}
+
+		for (const char of traditionalChars) {
+			if (text.includes(char)) traditionalCount++;
+		}
+
+		// 如果兩者都沒有，預設為簡體轉繁體
+		if (simplifiedCount === 0 && traditionalCount === 0) {
+			return 'simplified';
+		}
+
+		return simplifiedCount > traditionalCount ? 'simplified' : 'traditional';
 	}
 
 	restoreContent(text: string, placeholderMap: Map<string, string>): string {
@@ -777,27 +806,32 @@ export default class TranslatePlugin extends Plugin {
 		new Notice('轉換中 (OpenCC)...');
 
 		try {
-			// 1. 保護所有需要保留的內容
+			// 1. 偵測是簡體還是繁體，自動選擇轉換方向
+			const variant = this.detectChineseVariant(text);
+			const direction = variant === 'simplified' ? 'cn-to-tw' : 'tw-to-cn';
+			const directionText = variant === 'simplified' ? '簡→繁' : '繁→簡';
+
+			// 2. 保護所有需要保留的內容
 			const { protectedText, placeholderMap, separators } = this.protectContent(text);
 
-			// 2. 使用 OpenCC 進行簡繁轉換（懶加載）
-			const converter = await this.getOpenCCConverter();
+			// 3. 使用 OpenCC 進行簡繁轉換（懶加載）
+			const converter = await this.getOpenCCConverter(direction);
 			const convertedText = converter(protectedText);
 
-			// 3. 先恢復管道符號和其他佔位符
+			// 4. 先恢復管道符號和其他佔位符
 			let restoredText = this.restoreContent(convertedText, placeholderMap);
 
-			// 4. 恢復表格分隔行
+			// 5. 恢復表格分隔行
 			restoredText = this.restoreTableSeparators(restoredText, separators);
 
-			// 5. 更新內容
+			// 6. 更新內容
 			if (isFullPage) {
 				editor.setValue(restoredText);
 			} else {
 				editor.replaceSelection(restoredText);
 			}
 
-			new Notice('轉換完成！');
+			new Notice(`轉換完成！(${directionText})`);
 
 		} catch (error: any) {
 			new Notice(`轉換失敗：${error.message || String(error)}`);
@@ -1059,9 +1093,11 @@ class TranslateSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Model Type')
-			.setDesc('Translation model quality. Options: "", "quality_optimized", "speed_optimized". Leave empty for default')
-			.addText(text => text
-				.setPlaceholder('quality_optimized')
+			.setDesc('Translation model quality preference')
+			.addDropdown(dropDown => dropDown
+				.addOption('', 'Default')
+				.addOption('quality_optimized', 'Quality Optimized')
+				.addOption('speed_optimized', 'Speed Optimized')
 				.setValue(this.plugin.settings.modelType)
 				.onChange(async (value) => {
 					this.plugin.settings.modelType = value;
